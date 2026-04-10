@@ -164,9 +164,15 @@ public final class PluginGenerator {
         String name = (cmd.getName() == null) ? "" : cmd.getName().trim();
         if (name.isBlank()) name = "cmd";
 
-        String body = (cmd.getActions() == null || cmd.getActions().isEmpty())
-                ? "sender.sendMessage(\"" + escapeJava(cmd.getDescription()) + "\");"
-                : cmd.getActions().stream().map(this::actionLine).collect(Collectors.joining("\n                "));
+        String body;
+        if (cmd.getScratch() != null && cmd.getScratch().getBlocks() != null && !cmd.getScratch().getBlocks().isEmpty()) {
+            body = "org.bukkit.entity.Player p = (sender instanceof org.bukkit.entity.Player pl) ? pl : null;\n                "
+                    + scratchToJava(cmd.getScratch().getBlocks(), "this", "p", 0);
+        } else if (cmd.getActions() != null && !cmd.getActions().isEmpty()) {
+            body = cmd.getActions().stream().map(this::actionLine).collect(Collectors.joining("\n                "));
+        } else {
+            body = "sender.sendMessage(\"" + escapeJava(cmd.getDescription()) + "\");";
+        }
 
         return """
                 if (getCommand("%s") != null) getCommand("%s").setExecutor((sender, command, label, args) -> {
@@ -185,6 +191,50 @@ public final class PluginGenerator {
             case SET_GAMEMODE -> "if (sender instanceof org.bukkit.entity.Player p) p.setGameMode(org.bukkit.GameMode.valueOf(\"" + escapeJava(action.getGamemode()) + "\"));";
             case TELEPORT_SELF -> "if (sender instanceof org.bukkit.entity.Player p) { var w = getServer().getWorld(\"" + escapeJava(action.getWorld()) + "\"); if (w != null) p.teleport(new org.bukkit.Location(w, " + action.getX() + ", " + action.getY() + ", " + action.getZ() + ")); }";
             case GIVE_ITEM -> "if (sender instanceof org.bukkit.entity.Player p) p.getInventory().addItem(new org.bukkit.inventory.ItemStack(org.bukkit.Material.valueOf(\"" + escapeJava(action.getMaterial()) + "\"), " + action.getAmount() + "));";
+        };
+    }
+
+    private String scratchToJava(java.util.List<com.tommustbe12.plugincreator.model.ScratchBlock> blocks, String pluginExpr, String playerVar, int indent) {
+        String pad = " ".repeat(Math.max(0, indent));
+        return blocks.stream()
+                .map(b -> pad + scratchBlockToJava(b, pluginExpr, playerVar, indent))
+                .collect(Collectors.joining("\n" + pad));
+    }
+
+    private String scratchBlockToJava(com.tommustbe12.plugincreator.model.ScratchBlock block, String pluginExpr, String playerVar, int indent) {
+        var p = block.getParams();
+        return switch (block.getType()) {
+            case SAY_TEXT -> {
+                String target = p.getOrDefault("target", "PLAYER").toUpperCase(Locale.ROOT);
+                String text = escapeJava(p.getOrDefault("text", "Hello!"));
+                if ("ALL_PLAYERS".equals(target)) {
+                    yield "for (var pl : " + pluginExpr + ".getServer().getOnlinePlayers()) pl.sendMessage(\"" + text + "\");";
+                }
+                yield "if (" + playerVar + " != null) " + playerVar + ".sendMessage(\"" + text + "\");";
+            }
+            case SET_GAMEMODE -> {
+                String gm = escapeJava(p.getOrDefault("gamemode", "SURVIVAL").toUpperCase(Locale.ROOT));
+                yield "if (" + playerVar + " != null) " + playerVar + ".setGameMode(org.bukkit.GameMode.valueOf(\"" + gm + "\"));";
+            }
+            case OPEN_GUI -> "if (" + playerVar + " != null) GuiManager.openMain(" + playerVar + ");";
+            case RUN_CONSOLE_COMMAND -> {
+                String cmd = escapeJava(p.getOrDefault("command", "say Hello"));
+                yield pluginExpr + ".getServer().dispatchCommand(" + pluginExpr + ".getServer().getConsoleSender(), \"" + cmd + "\");";
+            }
+            case REPEAT_C -> {
+                int count = safeInt(p.getOrDefault("count", "5"), 5);
+                String inner = scratchToJava(block.getChildren(), pluginExpr, playerVar, indent + 4);
+                yield "for (int i=0;i<" + count + ";i++) {\n" + " ".repeat(indent + 4) + inner + "\n" + " ".repeat(indent) + "}";
+            }
+            case IF_C -> {
+                String cond = p.getOrDefault("cond", "PLAYER_PRESENT");
+                String test = switch (cond) {
+                    case "HAS_PERMISSION" -> "(" + playerVar + " != null && " + playerVar + ".hasPermission(\"" + escapeJava(p.getOrDefault("perm", "plugin.use")) + "\"))";
+                    default -> "(" + playerVar + " != null)";
+                };
+                String inner = scratchToJava(block.getChildren(), pluginExpr, playerVar, indent + 4);
+                yield "if " + test + " {\n" + " ".repeat(indent + 4) + inner + "\n" + " ".repeat(indent) + "}";
+            }
         };
     }
 
@@ -221,11 +271,68 @@ public final class PluginGenerator {
         String cls = handler.getEventClass();
         String method = handler.getMethodName().isBlank() ? "onEvent" : handler.getMethodName();
         String msg = escapeJava(handler.getMessage());
+        String flow = "";
+        if (handler.getProgram() != null && handler.getProgram().getBlocks() != null && !handler.getProgram().getBlocks().isEmpty()) {
+            flow = """
+                    org.bukkit.entity.Player p = (event instanceof org.bukkit.event.player.PlayerEvent pe) ? pe.getPlayer() : null;
+                    %s
+                    """.formatted(flowToJava(handler.getProgram(), "plugin", "p"));
+        }
         return """
                 @EventHandler
                 public void %s(%s event) {
+                    %s
                     plugin.getServer().broadcastMessage("%s");
-                }""".formatted(method, cls, msg);
+                }""".formatted(method, cls, flow, msg);
+    }
+
+    private String flowToJava(com.tommustbe12.plugincreator.model.FlowProgram program, String pluginExpr, String playerVar) {
+        return program.getBlocks().stream()
+                .map(b -> flowBlockToJava(b, pluginExpr, playerVar))
+                .collect(Collectors.joining("\n                    "));
+    }
+
+    private String flowBlockToJava(com.tommustbe12.plugincreator.model.FlowBlock block, String pluginExpr, String playerVar) {
+        var p = block.getParams();
+        return switch (block.getType()) {
+            case SAY_TO_PLAYER -> {
+                String text = escapeJava(p.getOrDefault("text", "Hello!"));
+                yield "if (" + playerVar + " != null) " + playerVar + ".sendMessage(\"" + text + "\");";
+            }
+            case BROADCAST -> {
+                String text = escapeJava(p.getOrDefault("text", "Hello!"));
+                yield pluginExpr + ".getServer().broadcastMessage(\"" + text + "\");";
+            }
+            case SET_GAMEMODE -> {
+                String gm = escapeJava(p.getOrDefault("gamemode", "SURVIVAL").toUpperCase(Locale.ROOT));
+                yield "if (" + playerVar + " != null) " + playerVar + ".setGameMode(org.bukkit.GameMode.valueOf(\"" + gm + "\"));";
+            }
+            case GIVE_ITEM -> {
+                String mat = escapeJava(p.getOrDefault("material", "DIAMOND").toUpperCase(Locale.ROOT));
+                int amt = safeInt(p.getOrDefault("amount", "1"), 1);
+                yield "if (" + playerVar + " != null) " + playerVar + ".getInventory().addItem(new org.bukkit.inventory.ItemStack(org.bukkit.Material.valueOf(\"" + mat + "\"), " + amt + "));";
+            }
+            case TELEPORT_PLAYER -> {
+                String world = escapeJava(p.getOrDefault("world", "world"));
+                double x = safeDouble(p.getOrDefault("x", "0"), 0);
+                double y = safeDouble(p.getOrDefault("y", "80"), 80);
+                double z = safeDouble(p.getOrDefault("z", "0"), 0);
+                yield "if (" + playerVar + " != null) { var w = " + pluginExpr + ".getServer().getWorld(\"" + world + "\"); if (w != null) " + playerVar + ".teleport(new org.bukkit.Location(w, " + x + ", " + y + ", " + z + ")); }";
+            }
+            case OPEN_GUI -> "if (" + playerVar + " != null) GuiManager.openMain(" + playerVar + ");";
+            case RUN_CONSOLE_COMMAND -> {
+                String cmd = escapeJava(p.getOrDefault("command", "say Hello"));
+                yield pluginExpr + ".getServer().dispatchCommand(" + pluginExpr + ".getServer().getConsoleSender(), \"" + cmd + "\");";
+            }
+        };
+    }
+
+    private static int safeInt(String s, int fallback) {
+        try { return Integer.parseInt(s.trim()); } catch (Exception ignored) { return fallback; }
+    }
+
+    private static double safeDouble(String s, double fallback) {
+        try { return Double.parseDouble(s.trim()); } catch (Exception ignored) { return fallback; }
     }
 
     private String templateGuiManager(PluginProject project, String pkg) {

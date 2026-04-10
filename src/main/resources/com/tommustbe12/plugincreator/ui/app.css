@@ -227,3 +227,61 @@
 .slot-btn:hover {
     -fx-background-color: rgba(255,255,255,0.08);
 }
+
+.scratch-editor {
+    -fx-background-color: transparent;
+}
+.scratch-palette {
+    -fx-min-width: 220;
+    -fx-max-width: 260;
+    -fx-background-color: rgba(255,255,255,0.020);
+    -fx-border-color: rgba(255,255,255,0.06);
+    -fx-border-width: 0 1 0 0;
+}
+.scratch-section {
+    -fx-text-fill: rgba(226,232,240,0.70);
+    -fx-font-weight: 800;
+    -fx-padding: 10 0 0 0;
+}
+.scratch-workspace {
+    -fx-background-color: rgba(255,255,255,0.018);
+    -fx-background-radius: 16;
+    -fx-border-radius: 16;
+    -fx-border-color: rgba(255,255,255,0.06);
+    -fx-border-width: 1;
+}
+.scratch-hint {
+    -fx-text-fill: rgba(226,232,240,0.55);
+    -fx-padding: 14;
+}
+.scratch-block {
+    -fx-background-color: rgba(59,130,246,0.18);
+    -fx-background-radius: 14;
+    -fx-border-radius: 14;
+    -fx-border-color: rgba(255,255,255,0.08);
+    -fx-border-width: 1;
+    -fx-padding: 10 12 10 12;
+}
+.palette-block {
+    -fx-background-color: rgba(34,197,94,0.14);
+}
+.scratch-block-title {
+    -fx-text-fill: rgba(226,232,240,0.92);
+    -fx-font-weight: 900;
+}
+.scratch-del {
+    -fx-background-color: rgba(255,255,255,0.06);
+    -fx-text-fill: rgba(226,232,240,0.9);
+    -fx-background-radius: 999;
+    -fx-border-radius: 999;
+    -fx-min-width: 28;
+    -fx-min-height: 28;
+    -fx-padding: 0;
+}
+.c-block {
+    -fx-background-color: rgba(168,85,247,0.14);
+}
+.c-inner {
+    -fx-border-color: rgba(255,255,255,0.10);
+    -fx-border-width: 0 0 0 3;
+}

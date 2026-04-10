@@ -5,6 +5,7 @@ import com.tommustbe12.plugincreator.events.EventCatalogService;
 import com.tommustbe12.plugincreator.generator.GeneratedProject;
 import com.tommustbe12.plugincreator.generator.PluginGenerator;
 import com.tommustbe12.plugincreator.model.CommandAction;
+import com.tommustbe12.plugincreator.model.FlowProgram;
 import com.tommustbe12.plugincreator.model.GuiScreen;
 import com.tommustbe12.plugincreator.model.GuiSlot;
 import com.tommustbe12.plugincreator.model.PluginCommand;
@@ -81,6 +82,8 @@ public final class EditorView {
     private final TextField cmdNameField = new TextField();
     private final TextField cmdDescField = new TextField();
     private boolean syncingCommandEditor;
+    private final FlowEditorPane commandFlowEditor = new FlowEditorPane();
+    private final ScratchBlockEditor scratchEditor = new ScratchBlockEditor();
 
     private final TreeView<Path> filesTree = new TreeView<>();
     private final CodeArea codeArea = new CodeArea();
@@ -90,6 +93,8 @@ public final class EditorView {
     private final ListView<EventCatalogService.BukkitEventInfo> eventPickerList = new ListView<>();
     private List<EventCatalogService.BukkitEventInfo> cachedEvents = List.of();
     private final ComboBox<EventCatalogService.BukkitEventInfo> eventCombo = new ComboBox<>();
+    private final FlowEditorPane eventFlowEditor = new FlowEditorPane();
+    private final Label eventSelectedLabel = new Label("No event selected");
 
     private final ComboBox<GuiScreen> guiPicker = new ComboBox<>();
     private final Spinner<Integer> guiRowsSpinner = new Spinner<>(1, 6, 3);
@@ -265,14 +270,14 @@ public final class EditorView {
         left.getStyleClass().add("subcard");
         left.setPadding(new Insets(12));
 
-        Parent editor = buildCommandEditor();
+        Parent editor = buildCommandFlowEditor();
         SplitPane split = new SplitPane(left, editor);
         split.setDividerPositions(0.48);
         return new StackPane(split);
     }
 
-    private Parent buildCommandEditor() {
-        Label title = new Label("Command editor");
+    private Parent buildCommandFlowEditor() {
+        Label title = new Label("Command blocks");
         title.getStyleClass().add("section-title");
 
         cmdNameField.setPromptText("hello");
@@ -292,35 +297,11 @@ public final class EditorView {
             PluginCommand selected = commandsTable.getSelectionModel().getSelectedItem();
             if (selected == null) return;
             selected.setDescription(b);
-            if (selected.getActions().isEmpty()) {
-                selected.getActions().add(new CommandAction(CommandAction.Type.SEND_MESSAGE, b));
-            }
-            commandActionsList.refresh();
             commandsTable.refresh();
             refreshJsonFromModel();
         });
 
-        commandActionsList.setCellFactory(lv -> new ListCell<>() {
-            @Override
-            protected void updateItem(CommandAction item, boolean empty) {
-                super.updateItem(item, empty);
-                if (empty || item == null) {
-                    setText(null);
-                } else {
-                    setText(item.getType().name().replace('_', ' ') + ": " + item.getText());
-                }
-            }
-        });
-
-        Button addAction = new Button("Add action");
-        addAction.getStyleClass().add("primary");
-        addAction.setOnAction(e -> addCommandAction());
-        Button editAction = new Button("Edit");
-        editAction.setOnAction(e -> editSelectedAction());
-        Button removeAction = new Button("Remove");
-        removeAction.setOnAction(e -> removeSelectedAction());
-
-        HBox actionBtns = new HBox(8, addAction, editAction, removeAction);
+        scratchEditor.setOnChange(this::refreshJsonFromModel);
 
         GridPane fields = new GridPane();
         fields.setHgap(10);
@@ -333,8 +314,8 @@ public final class EditorView {
         c2.setHgrow(Priority.ALWAYS);
         fields.getColumnConstraints().setAll(c1, c2);
 
-        VBox box = new VBox(12, title, fields, new Label("Actions (block-like)"), commandActionsList, actionBtns);
-        VBox.setVgrow(commandActionsList, Priority.ALWAYS);
+        VBox box = new VBox(12, title, fields, scratchEditor.root());
+        VBox.setVgrow(scratchEditor.root(), Priority.ALWAYS);
         box.getStyleClass().add("subcard");
         box.setPadding(new Insets(12));
         return box;
@@ -346,12 +327,14 @@ public final class EditorView {
             if (cmd == null) {
                 cmdNameField.setText("");
                 cmdDescField.setText("");
-                commandActionsList.getItems().clear();
+                commandFlowEditor.setProgram(new FlowProgram());
+                scratchEditor.setProgram(new com.tommustbe12.plugincreator.model.ScratchProgram());
                 return;
             }
             cmdNameField.setText(cmd.getName());
             cmdDescField.setText(cmd.getDescription());
-            commandActionsList.getItems().setAll(cmd.getActions());
+            commandFlowEditor.setProgram(cmd.getProgram());
+            scratchEditor.setProgram(cmd.getScratch());
         } finally {
             syncingCommandEditor = false;
         }
@@ -483,6 +466,7 @@ public final class EditorView {
 
         eventsTable.getColumns().addAll(prettyCol, eventCol, methodCol, msgCol);
         eventsTable.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY_FLEX_LAST_COLUMN);
+        eventsTable.getSelectionModel().selectedItemProperty().addListener((o, a, b) -> showEventHandler(b));
 
         VBox picker = buildEventPicker();
         picker.getStyleClass().add("subcard");
@@ -493,14 +477,31 @@ public final class EditorView {
         HBox actions = new HBox(8, remove);
         actions.setPadding(new Insets(10, 0, 0, 0));
 
+        eventSelectedLabel.getStyleClass().add("header-subtitle");
+        eventFlowEditor.setOnChange(this::refreshJsonFromModel);
+        VBox flowBox = new VBox(10, new Label("Event blocks"), eventSelectedLabel, eventFlowEditor.root());
+        flowBox.getStyleClass().add("subcard");
+        flowBox.setPadding(new Insets(12));
+        VBox.setVgrow(eventFlowEditor.root(), Priority.ALWAYS);
+
         VBox tableBox = new VBox(10, new Label("Added handlers"), eventsTable, actions);
         VBox.setVgrow(eventsTable, Priority.ALWAYS);
         tableBox.getStyleClass().add("subcard");
         tableBox.setPadding(new Insets(12));
 
-        VBox box = new VBox(16, picker, tableBox);
+        VBox box = new VBox(16, picker, tableBox, flowBox);
         box.setPadding(new Insets(12));
         return box;
+    }
+
+    private void showEventHandler(PluginEventHandler handler) {
+        if (handler == null) {
+            eventSelectedLabel.setText("No event selected");
+            eventFlowEditor.setProgram(new FlowProgram());
+            return;
+        }
+        eventSelectedLabel.setText(EventCatalogService.toDisplayName(simpleName(handler.getEventClass())));
+        eventFlowEditor.setProgram(handler.getProgram());
     }
 
     private VBox buildEventPicker() {
@@ -623,6 +624,7 @@ public final class EditorView {
         refreshEventsTable();
         refreshTree();
         refreshJsonFromModel();
+        eventsTable.getSelectionModel().select(handler);
     }
 
     private void addFromCombo() {
@@ -645,6 +647,7 @@ public final class EditorView {
         refreshEventsTable();
         refreshTree();
         refreshJsonFromModel();
+        eventsTable.getSelectionModel().select(handler);
     }
 
     private static String simpleName(String fqcn) {
@@ -770,6 +773,10 @@ public final class EditorView {
         Button openFileBtn = new Button("Open File...");
         openFileBtn.setOnAction(e -> openAnyFile());
 
+        Button newFileBtn = new Button("New File...");
+        newFileBtn.getStyleClass().add("primary");
+        newFileBtn.setOnAction(e -> createNewFile());
+
         Button saveFile = new Button("Save");
         saveFile.setOnAction(e -> saveOpenFile());
         saveFile.getStyleClass().add("primary");
@@ -784,7 +791,7 @@ public final class EditorView {
         Label note = new Label("Tip: you can edit any file here; JSON is still the source of truth (beta).");
         note.getStyleClass().add("header-subtitle");
 
-        HBox actions = new HBox(10, openFolder, openFileBtn, saveFile, openFileLabel);
+        HBox actions = new HBox(10, openFolder, openFileBtn, newFileBtn, saveFile, openFileLabel);
         actions.setPadding(new Insets(12));
 
         VBox left = new VBox(10, new Label("Files"), note, filesTree);
@@ -1132,7 +1139,7 @@ public final class EditorView {
                 }
             }
             b.setOnAction(e -> {
-                GuiSlot target = slot;
+                GuiSlot target = gui.getSlots().stream().filter(s -> s.getIndex() == idx).findFirst().orElse(null);
                 if (target == null) {
                     GuiSlot created = new GuiSlot();
                     created.setIndex(idx);
@@ -1527,6 +1534,30 @@ public final class EditorView {
         File selected = chooser.showOpenDialog(root.getScene().getWindow());
         if (selected == null) return;
         openFile(selected.toPath());
+    }
+
+    private void createNewFile() {
+        DirectoryChooser chooser = new DirectoryChooser();
+        chooser.setTitle("Select folder to create file in");
+        File dir = chooser.showDialog(root.getScene().getWindow());
+        if (dir == null) return;
+
+        TextInputDialog name = new TextInputDialog("NewFile.java");
+        name.setHeaderText("New file name");
+        var result = name.showAndWait();
+        if (result.isEmpty() || result.get().trim().isBlank()) return;
+
+        Path path = dir.toPath().resolve(result.get().trim());
+        try {
+            Files.createDirectories(path.getParent());
+            if (!Files.exists(path)) {
+                Files.writeString(path, "", StandardCharsets.UTF_8);
+            }
+            openFile(path);
+            loadFilesRoot(dir.toPath());
+        } catch (IOException ex) {
+            log("Create file failed: " + ex.getMessage());
+        }
     }
 
     private void loadFilesRoot(Path rootDir) {

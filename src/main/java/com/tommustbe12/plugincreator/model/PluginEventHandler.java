@@ -11,6 +11,7 @@ public final class PluginEventHandler {
     private String eventClass = "org.bukkit.event.player.PlayerJoinEvent";
     private String methodName = "onPlayerJoin";
     private String message = "Welcome!";
+    private FlowProgram program = new FlowProgram();
 
     public PluginEventHandler() {
     }
@@ -19,6 +20,11 @@ public final class PluginEventHandler {
         setEventClass(eventClass);
         setMethodName(methodName);
         setMessage(message);
+        if (program.getBlocks().isEmpty()) {
+            var b = new FlowBlock(FlowBlock.Type.BROADCAST);
+            b.getParams().put("text", message);
+            program.getBlocks().add(b);
+        }
     }
 
     public String getEventClass() {
@@ -44,5 +50,12 @@ public final class PluginEventHandler {
     public void setMessage(String message) {
         this.message = Objects.requireNonNullElse(message, "").trim();
     }
-}
 
+    public FlowProgram getProgram() {
+        return program;
+    }
+
+    public void setProgram(FlowProgram program) {
+        this.program = (program == null) ? new FlowProgram() : program;
+    }
+}
