@@ -17,6 +17,7 @@ public final class PluginProject {
     private List<PluginCommand> commands = new ArrayList<>();
     private List<PluginEventHandler> events = new ArrayList<>();
     private MapConfig config = new MapConfig();
+    private List<GuiScreen> guis = new ArrayList<>();
 
     public String getName() {
         return name;
@@ -72,5 +73,13 @@ public final class PluginProject {
 
     public void setConfig(MapConfig config) {
         this.config = (config == null) ? new MapConfig() : config;
+    }
+
+    public List<GuiScreen> getGuis() {
+        return guis;
+    }
+
+    public void setGuis(List<GuiScreen> guis) {
+        this.guis = (guis == null) ? new ArrayList<>() : new ArrayList<>(guis);
     }
 }

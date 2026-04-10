@@ -10,6 +10,7 @@ import java.util.Objects;
 public final class PluginCommand {
     private String name = "hello";
     private String description = "Says hello";
+    private java.util.List<CommandAction> actions = new java.util.ArrayList<>();
 
     public PluginCommand() {
     }
@@ -17,6 +18,9 @@ public final class PluginCommand {
     public PluginCommand(String name, String description) {
         setName(name);
         setDescription(description);
+        if (actions.isEmpty()) {
+            actions.add(new CommandAction(CommandAction.Type.SEND_MESSAGE, this.description));
+        }
     }
 
     public String getName() {
@@ -34,5 +38,13 @@ public final class PluginCommand {
     public void setDescription(String description) {
         this.description = Objects.requireNonNullElse(description, "").trim();
     }
-}
 
+    public java.util.List<CommandAction> getActions() {
+        if (actions == null) actions = new java.util.ArrayList<>();
+        return actions;
+    }
+
+    public void setActions(java.util.List<CommandAction> actions) {
+        this.actions = (actions == null) ? new java.util.ArrayList<>() : new java.util.ArrayList<>(actions);
+    }
+}

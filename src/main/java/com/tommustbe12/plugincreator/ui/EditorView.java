@@ -1,16 +1,23 @@
 package com.tommustbe12.plugincreator.ui;
 
 import com.tommustbe12.plugincreator.build.GradleBuildService;
+import com.tommustbe12.plugincreator.events.EventCatalogService;
 import com.tommustbe12.plugincreator.generator.GeneratedProject;
 import com.tommustbe12.plugincreator.generator.PluginGenerator;
+import com.tommustbe12.plugincreator.model.CommandAction;
+import com.tommustbe12.plugincreator.model.GuiScreen;
+import com.tommustbe12.plugincreator.model.GuiSlot;
 import com.tommustbe12.plugincreator.model.PluginCommand;
 import com.tommustbe12.plugincreator.model.PluginEventHandler;
 import com.tommustbe12.plugincreator.model.PluginProject;
 import com.tommustbe12.plugincreator.storage.ProjectStorage;
 import javafx.application.Platform;
 import javafx.geometry.Insets;
+import javafx.geometry.Pos;
 import javafx.scene.Parent;
 import javafx.scene.control.*;
+import javafx.scene.control.cell.TextFieldTableCell;
+import javafx.scene.image.ImageView;
 import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.ColumnConstraints;
 import javafx.scene.layout.GridPane;
@@ -18,6 +25,8 @@ import javafx.scene.layout.HBox;
 import javafx.scene.layout.Region;
 import javafx.scene.layout.Priority;
 import javafx.scene.layout.VBox;
+import javafx.scene.layout.StackPane;
+import javafx.scene.layout.TilePane;
 import javafx.stage.DirectoryChooser;
 import javafx.stage.FileChooser;
 import javafx.util.Pair;
@@ -32,15 +41,20 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.Optional;
+import java.util.stream.Collectors;
 
 public final class EditorView {
     private final ProjectStorage storage;
     private final PluginGenerator generator = new PluginGenerator();
     private final GradleBuildService buildService = new GradleBuildService();
+    private final EventCatalogService eventCatalog = new EventCatalogService();
+    private final MaterialIconService materialIcons = new MaterialIconService();
     private final ExecutorService background = Executors.newSingleThreadExecutor(r -> {
         Thread t = new Thread(r, "plugincreator-bg");
         t.setDaemon(true);
@@ -63,10 +77,27 @@ public final class EditorView {
 
     private final TableView<PluginCommand> commandsTable = new TableView<>();
     private final TableView<PluginEventHandler> eventsTable = new TableView<>();
+    private final ListView<CommandAction> commandActionsList = new ListView<>();
+    private final TextField cmdNameField = new TextField();
+    private final TextField cmdDescField = new TextField();
+    private boolean syncingCommandEditor;
 
     private final TreeView<Path> filesTree = new TreeView<>();
     private final CodeArea codeArea = new CodeArea();
     private Path openFilePath;
+
+    private final TextField eventSearchField = new TextField();
+    private final ListView<EventCatalogService.BukkitEventInfo> eventPickerList = new ListView<>();
+    private List<EventCatalogService.BukkitEventInfo> cachedEvents = List.of();
+    private final ComboBox<EventCatalogService.BukkitEventInfo> eventCombo = new ComboBox<>();
+
+    private final ComboBox<GuiScreen> guiPicker = new ComboBox<>();
+    private final Spinner<Integer> guiRowsSpinner = new Spinner<>(1, 6, 3);
+    private final TextField guiTitleField = new TextField();
+    private final TilePane guiGrid = new TilePane();
+    private final ListView<CommandAction> guiClickActions = new ListView<>();
+    private GuiSlot selectedGuiSlot;
+    private final ComboBox<String> guiMaterialPicker = new ComboBox<>();
 
     public EditorView(ProjectStorage storage, PluginProject initialModel) {
         this.storage = storage;
@@ -160,6 +191,7 @@ public final class EditorView {
         tabs.getTabs().add(new Tab("Commands", buildCommandsPane()));
         tabs.getTabs().add(new Tab("Events", buildEventsPane()));
         tabs.getTabs().add(new Tab("Config", buildConfigPane()));
+        tabs.getTabs().add(new Tab("GUI", buildGuiPane()));
         tabs.getTabs().add(new Tab("Files", buildFilesPane()));
         tabs.getTabs().add(new Tab("JSON (manual)", buildJsonPane()));
         tabs.getTabs().forEach(t -> t.setClosable(false));
@@ -206,18 +238,21 @@ public final class EditorView {
     }
 
     private Parent buildCommandsPane() {
-        TableColumn<PluginCommand, String> nameCol = new TableColumn<>("Name");
-        nameCol.setCellValueFactory(c -> new javafx.beans.property.SimpleStringProperty(c.getValue().getName()));
-        nameCol.setPrefWidth(200);
+        commandsTable.getColumns().clear();
+        TableColumn<PluginCommand, String> nameCol = new TableColumn<>("Command");
+        nameCol.setCellValueFactory(c -> new javafx.beans.property.SimpleStringProperty("/" + c.getValue().getName()));
+        nameCol.setPrefWidth(240);
 
         TableColumn<PluginCommand, String> descCol = new TableColumn<>("Description");
         descCol.setCellValueFactory(c -> new javafx.beans.property.SimpleStringProperty(c.getValue().getDescription()));
-        descCol.setPrefWidth(500);
+        descCol.setPrefWidth(520);
 
         commandsTable.getColumns().addAll(nameCol, descCol);
         commandsTable.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY_FLEX_LAST_COLUMN);
+        commandsTable.getSelectionModel().selectedItemProperty().addListener((o, a, b) -> showCommand(b));
 
-        Button add = new Button("Add");
+        Button add = new Button("Add command");
+        add.getStyleClass().add("primary");
         add.setOnAction(e -> addCommand());
         Button remove = new Button("Remove");
         remove.setOnAction(e -> removeCommand());
@@ -225,75 +260,483 @@ public final class EditorView {
         HBox actions = new HBox(8, add, remove);
         actions.setPadding(new Insets(10, 0, 0, 0));
 
-        VBox box = new VBox(10, commandsTable, actions);
-        box.setPadding(new Insets(12));
+        VBox left = new VBox(10, new Label("Commands"), commandsTable, actions);
         VBox.setVgrow(commandsTable, Priority.ALWAYS);
+        left.getStyleClass().add("subcard");
+        left.setPadding(new Insets(12));
+
+        Parent editor = buildCommandEditor();
+        SplitPane split = new SplitPane(left, editor);
+        split.setDividerPositions(0.48);
+        return new StackPane(split);
+    }
+
+    private Parent buildCommandEditor() {
+        Label title = new Label("Command editor");
+        title.getStyleClass().add("section-title");
+
+        cmdNameField.setPromptText("hello");
+        cmdDescField.setPromptText("Says hello");
+
+        cmdNameField.textProperty().addListener((o, a, b) -> {
+            if (syncingCommandEditor) return;
+            PluginCommand selected = commandsTable.getSelectionModel().getSelectedItem();
+            if (selected == null) return;
+            selected.setName(b);
+            refreshTree();
+            commandsTable.refresh();
+            refreshJsonFromModel();
+        });
+        cmdDescField.textProperty().addListener((o, a, b) -> {
+            if (syncingCommandEditor) return;
+            PluginCommand selected = commandsTable.getSelectionModel().getSelectedItem();
+            if (selected == null) return;
+            selected.setDescription(b);
+            if (selected.getActions().isEmpty()) {
+                selected.getActions().add(new CommandAction(CommandAction.Type.SEND_MESSAGE, b));
+            }
+            commandActionsList.refresh();
+            commandsTable.refresh();
+            refreshJsonFromModel();
+        });
+
+        commandActionsList.setCellFactory(lv -> new ListCell<>() {
+            @Override
+            protected void updateItem(CommandAction item, boolean empty) {
+                super.updateItem(item, empty);
+                if (empty || item == null) {
+                    setText(null);
+                } else {
+                    setText(item.getType().name().replace('_', ' ') + ": " + item.getText());
+                }
+            }
+        });
+
+        Button addAction = new Button("Add action");
+        addAction.getStyleClass().add("primary");
+        addAction.setOnAction(e -> addCommandAction());
+        Button editAction = new Button("Edit");
+        editAction.setOnAction(e -> editSelectedAction());
+        Button removeAction = new Button("Remove");
+        removeAction.setOnAction(e -> removeSelectedAction());
+
+        HBox actionBtns = new HBox(8, addAction, editAction, removeAction);
+
+        GridPane fields = new GridPane();
+        fields.setHgap(10);
+        fields.setVgap(10);
+        fields.addRow(0, new Label("Name"), cmdNameField);
+        fields.addRow(1, new Label("Description"), cmdDescField);
+        ColumnConstraints c1 = new ColumnConstraints();
+        c1.setMinWidth(120);
+        ColumnConstraints c2 = new ColumnConstraints();
+        c2.setHgrow(Priority.ALWAYS);
+        fields.getColumnConstraints().setAll(c1, c2);
+
+        VBox box = new VBox(12, title, fields, new Label("Actions (block-like)"), commandActionsList, actionBtns);
+        VBox.setVgrow(commandActionsList, Priority.ALWAYS);
+        box.getStyleClass().add("subcard");
+        box.setPadding(new Insets(12));
         return box;
+    }
+
+    private void showCommand(PluginCommand cmd) {
+        syncingCommandEditor = true;
+        try {
+            if (cmd == null) {
+                cmdNameField.setText("");
+                cmdDescField.setText("");
+                commandActionsList.getItems().clear();
+                return;
+            }
+            cmdNameField.setText(cmd.getName());
+            cmdDescField.setText(cmd.getDescription());
+            commandActionsList.getItems().setAll(cmd.getActions());
+        } finally {
+            syncingCommandEditor = false;
+        }
+    }
+
+    private void addCommandAction() {
+        PluginCommand cmd = commandsTable.getSelectionModel().getSelectedItem();
+        if (cmd == null) return;
+        ChoiceDialog<CommandAction.Type> typeDialog = new ChoiceDialog<>(CommandAction.Type.SEND_MESSAGE, CommandAction.Type.values());
+        typeDialog.setHeaderText("Choose action type");
+        var type = typeDialog.showAndWait();
+        if (type.isEmpty()) return;
+        CommandAction action = new CommandAction();
+        action.setType(type.get());
+
+        if (type.get() == CommandAction.Type.GIVE_ITEM) {
+            TextInputDialog mat = new TextInputDialog("DIAMOND");
+            mat.setHeaderText("Material (e.g. DIAMOND)");
+            var m = mat.showAndWait();
+            if (m.isEmpty()) return;
+            action.setMaterial(m.get().trim());
+
+            TextInputDialog amt = new TextInputDialog("1");
+            amt.setHeaderText("Amount");
+            var a = amt.showAndWait();
+            if (a.isEmpty()) return;
+            try { action.setAmount(Integer.parseInt(a.get().trim())); } catch (Exception ignored) { action.setAmount(1); }
+        } else if (type.get() == CommandAction.Type.TELEPORT_SELF) {
+            TextInputDialog world = new TextInputDialog("world");
+            world.setHeaderText("World name");
+            var w = world.showAndWait();
+            if (w.isEmpty()) return;
+            action.setWorld(w.get().trim());
+
+            TextInputDialog x = new TextInputDialog("0");
+            x.setHeaderText("X");
+            var xs = x.showAndWait();
+            if (xs.isEmpty()) return;
+            TextInputDialog y = new TextInputDialog("100");
+            y.setHeaderText("Y");
+            var ys = y.showAndWait();
+            if (ys.isEmpty()) return;
+            TextInputDialog z = new TextInputDialog("0");
+            z.setHeaderText("Z");
+            var zs = z.showAndWait();
+            if (zs.isEmpty()) return;
+            try { action.setX(Double.parseDouble(xs.get().trim())); } catch (Exception ignored) {}
+            try { action.setY(Double.parseDouble(ys.get().trim())); } catch (Exception ignored) {}
+            try { action.setZ(Double.parseDouble(zs.get().trim())); } catch (Exception ignored) {}
+        } else if (type.get() == CommandAction.Type.SET_GAMEMODE) {
+            TextInputDialog gm = new TextInputDialog("SURVIVAL");
+            gm.setHeaderText("Gamemode (SURVIVAL/CREATIVE/ADVENTURE/SPECTATOR)");
+            var g = gm.showAndWait();
+            if (g.isEmpty()) return;
+            action.setGamemode(g.get().trim().toUpperCase());
+        } else {
+            TextInputDialog textDialog = new TextInputDialog("Hello!");
+            textDialog.setHeaderText("Action text");
+            var text = textDialog.showAndWait();
+            if (text.isEmpty()) return;
+            action.setText(text.get());
+        }
+
+        cmd.getActions().add(action);
+        commandActionsList.getItems().setAll(cmd.getActions());
+        refreshJsonFromModel();
+    }
+
+    private void editSelectedAction() {
+        PluginCommand cmd = commandsTable.getSelectionModel().getSelectedItem();
+        CommandAction selected = commandActionsList.getSelectionModel().getSelectedItem();
+        if (cmd == null || selected == null) return;
+
+        ChoiceDialog<CommandAction.Type> typeDialog = new ChoiceDialog<>(selected.getType(), CommandAction.Type.values());
+        typeDialog.setHeaderText("Action type");
+        var type = typeDialog.showAndWait();
+        if (type.isEmpty()) return;
+
+        TextInputDialog textDialog = new TextInputDialog(selected.getText());
+        textDialog.setHeaderText("Action text");
+        var text = textDialog.showAndWait();
+        if (text.isEmpty()) return;
+
+        selected.setType(type.get());
+        selected.setText(text.get());
+        commandActionsList.refresh();
+        refreshJsonFromModel();
+    }
+
+    private void removeSelectedAction() {
+        PluginCommand cmd = commandsTable.getSelectionModel().getSelectedItem();
+        CommandAction selected = commandActionsList.getSelectionModel().getSelectedItem();
+        if (cmd == null || selected == null) return;
+        cmd.getActions().remove(selected);
+        commandActionsList.getItems().setAll(cmd.getActions());
+        refreshJsonFromModel();
     }
 
     private Parent buildEventsPane() {
-        TableColumn<PluginEventHandler, String> eventCol = new TableColumn<>("Event Class");
+        eventsTable.getColumns().clear();
+        eventsTable.setEditable(true);
+
+        TableColumn<PluginEventHandler, String> prettyCol = new TableColumn<>("Event");
+        prettyCol.setCellValueFactory(c -> new javafx.beans.property.SimpleStringProperty(EventCatalogService.toDisplayName(simpleName(c.getValue().getEventClass()))));
+        prettyCol.setPrefWidth(240);
+
+        TableColumn<PluginEventHandler, String> eventCol = new TableColumn<>("Class (advanced)");
         eventCol.setCellValueFactory(c -> new javafx.beans.property.SimpleStringProperty(c.getValue().getEventClass()));
         eventCol.setPrefWidth(520);
+        eventCol.setVisible(false);
 
-        TableColumn<PluginEventHandler, String> methodCol = new TableColumn<>("Method");
+        TableColumn<PluginEventHandler, String> methodCol = new TableColumn<>("Handler");
         methodCol.setCellValueFactory(c -> new javafx.beans.property.SimpleStringProperty(c.getValue().getMethodName()));
-        methodCol.setPrefWidth(160);
+        methodCol.setCellFactory(TextFieldTableCell.forTableColumn());
+        methodCol.setOnEditCommit(e -> {
+            e.getRowValue().setMethodName(e.getNewValue());
+            refreshJsonFromModel();
+        });
+        methodCol.setPrefWidth(180);
 
         TableColumn<PluginEventHandler, String> msgCol = new TableColumn<>("Message");
         msgCol.setCellValueFactory(c -> new javafx.beans.property.SimpleStringProperty(c.getValue().getMessage()));
-        msgCol.setPrefWidth(300);
+        msgCol.setCellFactory(TextFieldTableCell.forTableColumn());
+        msgCol.setOnEditCommit(e -> {
+            e.getRowValue().setMessage(e.getNewValue());
+            refreshJsonFromModel();
+        });
+        msgCol.setPrefWidth(280);
 
-        eventsTable.getColumns().addAll(eventCol, methodCol, msgCol);
+        eventsTable.getColumns().addAll(prettyCol, eventCol, methodCol, msgCol);
         eventsTable.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY_FLEX_LAST_COLUMN);
 
-        Button add = new Button("Add");
-        add.setOnAction(e -> addEvent());
-        Button remove = new Button("Remove");
+        VBox picker = buildEventPicker();
+        picker.getStyleClass().add("subcard");
+
+        Button remove = new Button("Remove Selected");
         remove.setOnAction(e -> removeEvent());
 
-        HBox actions = new HBox(8, add, remove);
+        HBox actions = new HBox(8, remove);
         actions.setPadding(new Insets(10, 0, 0, 0));
 
-        VBox box = new VBox(10, eventsTable, actions);
-        box.setPadding(new Insets(12));
+        VBox tableBox = new VBox(10, new Label("Added handlers"), eventsTable, actions);
         VBox.setVgrow(eventsTable, Priority.ALWAYS);
+        tableBox.getStyleClass().add("subcard");
+        tableBox.setPadding(new Insets(12));
+
+        VBox box = new VBox(16, picker, tableBox);
+        box.setPadding(new Insets(12));
         return box;
+    }
+
+    private VBox buildEventPicker() {
+        Label title = new Label("Event catalog");
+        title.getStyleClass().add("section-title");
+
+        eventSearchField.setPromptText("Search events (e.g. join, quit, block break)...");
+        eventSearchField.textProperty().addListener((o, a, b) -> refreshEventPicker());
+
+        eventCombo.setEditable(true);
+        eventCombo.setPromptText("Type event name (e.g. On Player Join)...");
+        eventCombo.setMaxWidth(Double.MAX_VALUE);
+        eventCombo.setCellFactory(lv -> new ListCell<>() {
+            @Override
+            protected void updateItem(EventCatalogService.BukkitEventInfo item, boolean empty) {
+                super.updateItem(item, empty);
+                setText(empty || item == null ? null : item.displayName());
+            }
+        });
+        eventCombo.setButtonCell(new ListCell<>() {
+            @Override
+            protected void updateItem(EventCatalogService.BukkitEventInfo item, boolean empty) {
+                super.updateItem(item, empty);
+                setText(empty || item == null ? "" : item.displayName());
+            }
+        });
+        eventCombo.getEditor().textProperty().addListener((o, a, b) -> {
+            if (b == null) return;
+            refreshEventCombo(b);
+            if (!eventCombo.isShowing()) eventCombo.show();
+        });
+
+        eventPickerList.setCellFactory(lv -> new ListCell<>() {
+            @Override
+            protected void updateItem(EventCatalogService.BukkitEventInfo item, boolean empty) {
+                super.updateItem(item, empty);
+                if (empty || item == null) {
+                    setText(null);
+                } else {
+                    setText(item.displayName());
+                }
+            }
+        });
+        eventPickerList.setPrefHeight(220);
+
+        Button refresh = new Button("Refresh catalog");
+        refresh.setOnAction(e -> loadEventCatalog());
+
+        Button add = new Button("Add handler");
+        add.getStyleClass().add("primary");
+        add.setOnAction(e -> addSelectedEventHandler());
+
+        Button addTyped = new Button("Add typed");
+        addTyped.getStyleClass().add("primary");
+        addTyped.setOnAction(e -> addFromCombo());
+
+        HBox comboRow = new HBox(10, eventCombo, addTyped);
+        HBox.setHgrow(eventCombo, Priority.ALWAYS);
+
+        HBox actions = new HBox(10, refresh, add);
+
+        VBox box = new VBox(10, title, comboRow, new Label("Or browse/search"), eventSearchField, eventPickerList, actions);
+        box.setPadding(new Insets(12));
+        if (cachedEvents.isEmpty()) {
+            loadEventCatalog();
+        } else {
+            refreshEventPicker();
+        }
+        return box;
+    }
+
+    private void loadEventCatalog() {
+        log("Loading Bukkit/Paper event catalog...");
+        background.submit(() -> {
+            try {
+                List<EventCatalogService.BukkitEventInfo> events = eventCatalog.listAllEvents();
+                Platform.runLater(() -> {
+                    cachedEvents = events;
+                    refreshEventPicker();
+                    refreshEventCombo("");
+                    log("Loaded " + cachedEvents.size() + " events.");
+                });
+            } catch (Exception ex) {
+                log("Event catalog failed: " + ex.getMessage());
+            }
+        });
+    }
+
+    private void refreshEventPicker() {
+        String q = eventSearchField.getText();
+        List<EventCatalogService.BukkitEventInfo> filtered = cachedEvents.stream()
+                .filter(e -> e.matches(q))
+                .limit(600)
+                .collect(Collectors.toList());
+        eventPickerList.getItems().setAll(filtered);
+        if (!filtered.isEmpty() && eventPickerList.getSelectionModel().getSelectedItem() == null) {
+            eventPickerList.getSelectionModel().select(0);
+        }
+    }
+
+    private void refreshEventCombo(String query) {
+        List<EventCatalogService.BukkitEventInfo> filtered = cachedEvents.stream()
+                .filter(e -> e.matches(query))
+                .limit(40)
+                .collect(Collectors.toList());
+        eventCombo.getItems().setAll(filtered);
+        if (!filtered.isEmpty()) {
+            eventCombo.getSelectionModel().select(0);
+        }
+    }
+
+    private void addSelectedEventHandler() {
+        EventCatalogService.BukkitEventInfo selected = eventPickerList.getSelectionModel().getSelectedItem();
+        if (selected == null) return;
+        PluginEventHandler handler = new PluginEventHandler();
+        handler.setEventClass(selected.className());
+        handler.setMethodName(selected.suggestedMethodName());
+        handler.setMessage("Triggered: " + selected.displayName());
+        model.getEvents().add(handler);
+        refreshEventsTable();
+        refreshTree();
+        refreshJsonFromModel();
+    }
+
+    private void addFromCombo() {
+        EventCatalogService.BukkitEventInfo selected = eventCombo.getSelectionModel().getSelectedItem();
+        if (selected == null) {
+            String typed = eventCombo.getEditor().getText();
+            if (typed != null && !typed.isBlank()) {
+                selected = cachedEvents.stream().filter(e -> e.displayName().equalsIgnoreCase(typed.trim())).findFirst().orElse(null);
+            }
+        }
+        if (selected == null) {
+            log("Pick a valid event from the dropdown.");
+            return;
+        }
+        PluginEventHandler handler = new PluginEventHandler();
+        handler.setEventClass(selected.className());
+        handler.setMethodName(selected.suggestedMethodName());
+        handler.setMessage("Triggered: " + selected.displayName());
+        model.getEvents().add(handler);
+        refreshEventsTable();
+        refreshTree();
+        refreshJsonFromModel();
+    }
+
+    private static String simpleName(String fqcn) {
+        if (fqcn == null) return "";
+        int idx = fqcn.lastIndexOf('.');
+        return (idx < 0) ? fqcn : fqcn.substring(idx + 1);
     }
 
     private Parent buildConfigPane() {
-        TextArea configArea = new TextArea();
-        configArea.setPromptText("For now this is a simple YAML-ish text area. Future: structured editor.");
-        configArea.setWrapText(false);
+        TableView<Map.Entry<String, String>> table = new TableView<>();
+        table.setEditable(true);
 
-        Button loadFromModel = new Button("Load from Model");
-        loadFromModel.setOnAction(e -> configArea.setText(configToText()));
-
-        Button applyToModel = new Button("Apply to Model");
-        applyToModel.setOnAction(e -> {
-            model.getConfig().getValues().clear();
-            model.getConfig().getValues().put("raw", configArea.getText());
+        TableColumn<Map.Entry<String, String>, String> keyCol = new TableColumn<>("Key");
+        keyCol.setCellValueFactory(c -> new javafx.beans.property.SimpleStringProperty(c.getValue().getKey()));
+        keyCol.setCellFactory(TextFieldTableCell.forTableColumn());
+        keyCol.setOnEditCommit(e -> {
+            String oldKey = e.getRowValue().getKey();
+            String newKey = e.getNewValue();
+            if (newKey == null || newKey.isBlank()) return;
+            String value = model.getConfig().getValues().remove(oldKey);
+            model.getConfig().getValues().put(newKey.trim(), value);
+            refreshConfigTable(table);
             refreshJsonFromModel();
-            log("Applied config text to model (config.values.raw).");
         });
 
-        HBox actions = new HBox(8, loadFromModel, applyToModel);
-        actions.setPadding(new Insets(12));
+        TableColumn<Map.Entry<String, String>, String> valCol = new TableColumn<>("Value");
+        valCol.setCellValueFactory(c -> new javafx.beans.property.SimpleStringProperty(c.getValue().getValue()));
+        valCol.setCellFactory(TextFieldTableCell.forTableColumn());
+        valCol.setOnEditCommit(e -> {
+            model.getConfig().getValues().put(e.getRowValue().getKey(), e.getNewValue());
+            refreshJsonFromModel();
+        });
 
-        VBox box = new VBox(actions, configArea);
-        VBox.setVgrow(configArea, Priority.ALWAYS);
-        box.setPadding(new Insets(0, 0, 12, 0));
-        Platform.runLater(() -> configArea.setText(configToText()));
+        table.getColumns().addAll(keyCol, valCol);
+        table.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY_FLEX_LAST_COLUMN);
+
+        Button add = new Button("Add");
+        add.getStyleClass().add("primary");
+        add.setOnAction(e -> {
+            String base = "key";
+            int i = 1;
+            while (model.getConfig().getValues().containsKey(base + i)) i++;
+            model.getConfig().getValues().put(base + i, "value");
+            refreshConfigTable(table);
+            refreshJsonFromModel();
+        });
+
+        Button remove = new Button("Remove Selected");
+        remove.setOnAction(e -> {
+            var selected = table.getSelectionModel().getSelectedItem();
+            if (selected == null) return;
+            model.getConfig().getValues().remove(selected.getKey());
+            refreshConfigTable(table);
+            refreshJsonFromModel();
+        });
+
+        Button rawEdit = new Button("Raw editor...");
+        rawEdit.setOnAction(e -> openRawConfigEditor());
+
+        HBox actions = new HBox(10, add, remove, rawEdit);
+        actions.setPadding(new Insets(12, 12, 0, 12));
+
+        VBox box = new VBox(10, actions, table);
+        box.setPadding(new Insets(12));
+        VBox.setVgrow(table, Priority.ALWAYS);
+        Platform.runLater(() -> refreshConfigTable(table));
         return box;
     }
 
-    private String configToText() {
-        Object raw = model.getConfig().getValues().get("raw");
-        if (raw instanceof String s) return s;
-        return """
-                # config.yml (beta)
-                greeting: "Hello from config!"
-                """;
+    private void refreshConfigTable(TableView<Map.Entry<String, String>> table) {
+        table.getItems().setAll(new ArrayList<>(model.getConfig().getValues().entrySet()));
+    }
+
+    private void openRawConfigEditor() {
+        Dialog<String> dialog = new Dialog<>();
+        dialog.setTitle("Raw config editor");
+        dialog.setHeaderText("Advanced: edit generated config.yml as raw text");
+        ButtonType save = new ButtonType("Save", ButtonBar.ButtonData.OK_DONE);
+        dialog.getDialogPane().getButtonTypes().addAll(save, ButtonType.CANCEL);
+
+        TextArea area = new TextArea();
+        area.setWrapText(false);
+        area.setText(model.getConfig().getRaw() == null ? "" : model.getConfig().getRaw());
+        area.setPrefWidth(900);
+        area.setPrefHeight(500);
+        dialog.getDialogPane().setContent(area);
+
+        dialog.setResultConverter(bt -> bt == save ? area.getText() : null);
+        dialog.showAndWait().ifPresent(text -> {
+            model.getConfig().setRaw(text);
+            refreshJsonFromModel();
+        });
     }
 
     private Parent buildFilesPane() {
@@ -324,6 +767,9 @@ public final class EditorView {
         Button openFolder = new Button("Open Folder...");
         openFolder.setOnAction(e -> chooseAndLoadFilesRoot());
 
+        Button openFileBtn = new Button("Open File...");
+        openFileBtn.setOnAction(e -> openAnyFile());
+
         Button saveFile = new Button("Save");
         saveFile.setOnAction(e -> saveOpenFile());
         saveFile.getStyleClass().add("primary");
@@ -335,10 +781,13 @@ public final class EditorView {
             if (openFilePath != null) openFileLabel.setText(openFilePath.toString());
         });
 
-        HBox actions = new HBox(10, openFolder, saveFile, openFileLabel);
+        Label note = new Label("Tip: you can edit any file here; JSON is still the source of truth (beta).");
+        note.getStyleClass().add("header-subtitle");
+
+        HBox actions = new HBox(10, openFolder, openFileBtn, saveFile, openFileLabel);
         actions.setPadding(new Insets(12));
 
-        VBox left = new VBox(10, new Label("Files"), filesTree);
+        VBox left = new VBox(10, new Label("Files"), note, filesTree);
         left.setPadding(new Insets(12));
         VBox.setVgrow(filesTree, Priority.ALWAYS);
         left.getStyleClass().add("card");
@@ -351,6 +800,225 @@ public final class EditorView {
         split.setDividerPositions(0.28);
         return split;
     }
+
+    private Parent buildGuiPane() {
+        VBox wrapper = new VBox(14);
+        wrapper.setPadding(new Insets(12));
+
+        Label title = new Label("GUI editor (beta)");
+        title.getStyleClass().add("section-title");
+
+        guiPicker.setPromptText("Select GUI...");
+        guiPicker.setCellFactory(lv -> new ListCell<>() {
+            @Override
+            protected void updateItem(GuiScreen item, boolean empty) {
+                super.updateItem(item, empty);
+                setText(empty || item == null ? null : item.getTitle() + " (" + item.getRows() + " rows)");
+            }
+        });
+        guiPicker.setButtonCell(new ListCell<>() {
+            @Override
+            protected void updateItem(GuiScreen item, boolean empty) {
+                super.updateItem(item, empty);
+                setText(empty || item == null ? "" : item.getTitle());
+            }
+        });
+        guiPicker.valueProperty().addListener((o, a, b) -> showGui(b));
+
+        Button addGui = new Button("New GUI");
+        addGui.getStyleClass().add("primary");
+        addGui.setOnAction(e -> createGui());
+        Button removeGui = new Button("Delete GUI");
+        removeGui.setOnAction(e -> deleteGui());
+        Button textures = new Button("Textures...");
+        textures.setOnAction(e -> chooseTexturePack());
+
+        HBox topRow = new HBox(10, guiPicker, addGui, removeGui, textures);
+        HBox.setHgrow(guiPicker, Priority.ALWAYS);
+
+        guiTitleField.setPromptText("Title");
+        guiTitleField.textProperty().addListener((o, a, b) -> {
+            GuiScreen g = guiPicker.getValue();
+            if (g == null) return;
+            g.setTitle(b);
+            refreshGuiPicker();
+            refreshJsonFromModel();
+        });
+
+        guiRowsSpinner.valueProperty().addListener((o, a, b) -> {
+            GuiScreen g = guiPicker.getValue();
+            if (g == null) return;
+            g.setRows(b);
+            rebuildGuiGrid();
+            refreshGuiPicker();
+            refreshJsonFromModel();
+        });
+
+        GridPane props = new GridPane();
+        props.setHgap(10);
+        props.setVgap(10);
+        props.addRow(0, new Label("Title"), guiTitleField);
+        props.addRow(1, new Label("Rows"), guiRowsSpinner);
+        ColumnConstraints c1 = new ColumnConstraints();
+        c1.setMinWidth(90);
+        ColumnConstraints c2 = new ColumnConstraints();
+        c2.setHgrow(Priority.ALWAYS);
+        props.getColumnConstraints().setAll(c1, c2);
+
+        VBox left = new VBox(12, title, topRow, props, buildGuiSlotEditor());
+        left.getStyleClass().add("subcard");
+        left.setPadding(new Insets(12));
+
+        guiGrid.setHgap(8);
+        guiGrid.setVgap(8);
+        guiGrid.setPrefColumns(9);
+        guiGrid.setTileAlignment(Pos.CENTER);
+        guiGrid.getStyleClass().add("gui-grid");
+
+        ScrollPane gridScroll = new ScrollPane(guiGrid);
+        gridScroll.setFitToWidth(true);
+        gridScroll.setFitToHeight(true);
+        gridScroll.setHbarPolicy(ScrollPane.ScrollBarPolicy.NEVER);
+        gridScroll.setVbarPolicy(ScrollPane.ScrollBarPolicy.AS_NEEDED);
+        gridScroll.getStyleClass().add("subcard");
+
+        SplitPane split = new SplitPane(left, gridScroll);
+        split.setDividerPositions(0.38);
+
+        wrapper.getChildren().add(split);
+        VBox.setVgrow(split, Priority.ALWAYS);
+
+        Platform.runLater(this::ensureGuiExists);
+        return wrapper;
+    }
+
+    private Parent buildGuiSlotEditor() {
+        Label slotTitle = new Label("Selected slot");
+        slotTitle.getStyleClass().add("section-title");
+
+        guiMaterialPicker.setEditable(true);
+        guiMaterialPicker.setPromptText("STONE");
+        guiMaterialPicker.setMaxWidth(Double.MAX_VALUE);
+        guiMaterialPicker.getItems().setAll(listMaterials());
+        guiMaterialPicker.getEditor().textProperty().addListener((o, a, b) -> filterMaterialPicker(b));
+        guiMaterialPicker.setCellFactory(lv -> new ListCell<>() {
+            @Override
+            protected void updateItem(String item, boolean empty) {
+                super.updateItem(item, empty);
+                if (empty || item == null) {
+                    setText(null);
+                    setGraphic(null);
+                } else {
+                    setText(item);
+                    ImageView iv = iconView(item);
+                    setGraphic(iv);
+                }
+            }
+        });
+        guiMaterialPicker.setButtonCell(new ListCell<>() {
+            @Override
+            protected void updateItem(String item, boolean empty) {
+                super.updateItem(item, empty);
+                if (empty || item == null) {
+                    setText("");
+                    setGraphic(null);
+                } else {
+                    setText(item);
+                    setGraphic(iconView(item));
+                }
+            }
+        });
+        guiMaterialPicker.valueProperty().addListener((o, a, b) -> {
+            if (selectedGuiSlot == null) return;
+            if (b == null) return;
+            selectedGuiSlot.setMaterial(b);
+            refreshJsonFromModel();
+            rebuildGuiGrid();
+        });
+
+        TextField name = new TextField();
+        name.setPromptText("Display name");
+        name.textProperty().addListener((o, a, b) -> {
+            if (selectedGuiSlot == null) return;
+            selectedGuiSlot.setDisplayName(b);
+            refreshJsonFromModel();
+            rebuildGuiGrid();
+        });
+
+        guiClickActions.setCellFactory(lv -> new ListCell<>() {
+            @Override
+            protected void updateItem(CommandAction item, boolean empty) {
+                super.updateItem(item, empty);
+                if (empty || item == null) setText(null);
+                else setText(item.getType().name().replace('_', ' ') + ": " + item.getText());
+            }
+        });
+
+        Button add = new Button("Add click action");
+        add.getStyleClass().add("primary");
+        add.setOnAction(e -> addGuiClickAction());
+        Button edit = new Button("Edit");
+        edit.setOnAction(e -> editGuiClickAction());
+        Button remove = new Button("Remove");
+        remove.setOnAction(e -> removeGuiClickAction());
+
+        GridPane grid = new GridPane();
+        grid.setHgap(10);
+        grid.setVgap(10);
+        grid.addRow(0, new Label("Material"), guiMaterialPicker);
+        grid.addRow(1, new Label("Name"), name);
+        ColumnConstraints c1 = new ColumnConstraints();
+        c1.setMinWidth(90);
+        ColumnConstraints c2 = new ColumnConstraints();
+        c2.setHgrow(Priority.ALWAYS);
+        grid.getColumnConstraints().setAll(c1, c2);
+
+        selectedGuiSlot = null;
+        guiMaterialPicker.setDisable(true);
+        name.setDisable(true);
+        guiClickActions.setDisable(true);
+
+        guiGrid.getChildren().addListener((javafx.collections.ListChangeListener<? super javafx.scene.Node>) c -> {
+        });
+
+        VBox box = new VBox(10, slotTitle, grid, new Label("On click"), guiClickActions, new HBox(8, add, edit, remove));
+        VBox.setVgrow(guiClickActions, Priority.ALWAYS);
+
+        guiPicker.valueProperty().addListener((o, a, b) -> {
+            selectedGuiSlot = null;
+            guiMaterialPicker.setDisable(true);
+            name.setDisable(true);
+            guiClickActions.setDisable(true);
+            guiClickActions.getItems().clear();
+        });
+
+        // update controls when slot selected
+        this.guiSlotSelectionListener = slot -> {
+            selectedGuiSlot = slot;
+            if (slot == null) {
+                guiMaterialPicker.setDisable(true);
+                name.setDisable(true);
+                guiClickActions.setDisable(true);
+                guiClickActions.getItems().clear();
+            } else {
+                guiMaterialPicker.setDisable(false);
+                name.setDisable(false);
+                guiClickActions.setDisable(false);
+                guiMaterialPicker.getSelectionModel().select(slot.getMaterial());
+                guiMaterialPicker.getEditor().setText(slot.getMaterial());
+                name.setText(slot.getDisplayName());
+                guiClickActions.getItems().setAll(slot.getOnClickActions());
+            }
+        };
+
+        return box;
+    }
+
+    private interface GuiSlotSelectionListener {
+        void onSelected(GuiSlot slot);
+    }
+
+    private GuiSlotSelectionListener guiSlotSelectionListener = slot -> {};
 
     private Parent buildJsonPane() {
         jsonEditor.setWrapText(false);
@@ -401,6 +1069,9 @@ public final class EditorView {
 
     private void refreshCommandsTable() {
         commandsTable.getItems().setAll(model.getCommands());
+        if (!commandsTable.getItems().isEmpty() && commandsTable.getSelectionModel().getSelectedItem() == null) {
+            commandsTable.getSelectionModel().select(0);
+        }
     }
 
     private void refreshEventsTable() {
@@ -413,6 +1084,185 @@ public final class EditorView {
         } catch (IOException ex) {
             log("JSON serialize failed: " + ex.getMessage());
         }
+    }
+
+    private void ensureGuiExists() {
+        if (model.getGuis().isEmpty()) {
+            GuiScreen g = new GuiScreen();
+            g.setId("main_menu");
+            g.setTitle("Main Menu");
+            g.setRows(3);
+            model.getGuis().add(g);
+        }
+        refreshGuiPicker();
+        if (guiPicker.getValue() == null && !model.getGuis().isEmpty()) guiPicker.setValue(model.getGuis().getFirst());
+        showGui(guiPicker.getValue());
+    }
+
+    private void refreshGuiPicker() {
+        guiPicker.getItems().setAll(model.getGuis());
+    }
+
+    private void showGui(GuiScreen gui) {
+        if (gui == null) return;
+        guiTitleField.setText(gui.getTitle());
+        guiRowsSpinner.getValueFactory().setValue(gui.getRows());
+        rebuildGuiGrid();
+    }
+
+    private void rebuildGuiGrid() {
+        GuiScreen gui = guiPicker.getValue();
+        guiGrid.getChildren().clear();
+        selectedGuiSlot = null;
+        guiSlotSelectionListener.onSelected(null);
+        if (gui == null) return;
+        int total = gui.getRows() * 9;
+        for (int i = 0; i < total; i++) {
+            int idx = i;
+            GuiSlot slot = gui.getSlots().stream().filter(s -> s.getIndex() == idx).findFirst().orElse(null);
+            Button b = new Button(slotLabel(idx, slot));
+            b.setMinSize(72, 52);
+            b.setMaxSize(72, 52);
+            b.getStyleClass().add("slot-btn");
+            if (slot != null) {
+                ImageView iv = iconView(slot.getMaterial());
+                if (iv != null) {
+                    b.setGraphic(iv);
+                    b.setContentDisplay(ContentDisplay.TOP);
+                }
+            }
+            b.setOnAction(e -> {
+                GuiSlot target = slot;
+                if (target == null) {
+                    GuiSlot created = new GuiSlot();
+                    created.setIndex(idx);
+                    created.setMaterial("STONE");
+                    gui.getSlots().add(created);
+                    target = created;
+                }
+                guiSlotSelectionListener.onSelected(target);
+            });
+            guiGrid.getChildren().add(b);
+        }
+    }
+
+    private static String slotLabel(int idx, GuiSlot slot) {
+        if (slot == null) return "#" + idx;
+        String mat = slot.getMaterial() == null ? "" : slot.getMaterial();
+        String name = slot.getDisplayName() == null ? "" : slot.getDisplayName();
+        if (!name.isBlank()) return name;
+        if (!mat.isBlank()) return mat;
+        return "#" + idx;
+    }
+
+    private List<String> listMaterials() {
+        try {
+            return java.util.Arrays.stream(org.bukkit.Material.values())
+                    .map(Enum::name)
+                    .sorted()
+                    .toList();
+        } catch (Exception e) {
+            return List.of("STONE", "DIAMOND", "CHEST");
+        }
+    }
+
+    private void filterMaterialPicker(String query) {
+        if (query == null) return;
+        String q = query.trim().toUpperCase();
+        if (q.isEmpty()) return;
+        var filtered = listMaterials().stream().filter(m -> m.contains(q)).limit(80).toList();
+        guiMaterialPicker.getItems().setAll(filtered);
+        if (!filtered.isEmpty() && !guiMaterialPicker.isShowing()) guiMaterialPicker.show();
+    }
+
+    private ImageView iconView(String material) {
+        var img = materialIcons.findIcon(material);
+        if (img == null) return null;
+        ImageView iv = new ImageView(img);
+        iv.setFitWidth(20);
+        iv.setFitHeight(20);
+        iv.setPreserveRatio(true);
+        return iv;
+    }
+
+    private void chooseTexturePack() {
+        DirectoryChooser chooser = new DirectoryChooser();
+        chooser.setTitle("Select texture pack folder (containing assets/minecraft/textures/...)");
+        File selected = chooser.showDialog(root.getScene().getWindow());
+        if (selected == null) return;
+        materialIcons.setTexturePackRoot(selected.toPath());
+        log("Texture pack set: " + selected.getAbsolutePath());
+        rebuildGuiGrid();
+    }
+
+    private void createGui() {
+        TextInputDialog dialog = new TextInputDialog("Main Menu");
+        dialog.setHeaderText("New GUI title");
+        dialog.showAndWait().ifPresent(title -> {
+            GuiScreen g = new GuiScreen();
+            g.setId("gui_" + (model.getGuis().size() + 1));
+            g.setTitle(title.trim().isBlank() ? "GUI" : title.trim());
+            g.setRows(3);
+            model.getGuis().add(g);
+            refreshGuiPicker();
+            guiPicker.setValue(g);
+            refreshJsonFromModel();
+        });
+    }
+
+    private void deleteGui() {
+        GuiScreen selected = guiPicker.getValue();
+        if (selected == null) return;
+        model.getGuis().remove(selected);
+        refreshGuiPicker();
+        if (!model.getGuis().isEmpty()) guiPicker.setValue(model.getGuis().getFirst());
+        refreshJsonFromModel();
+    }
+
+    private void addGuiClickAction() {
+        if (selectedGuiSlot == null) return;
+        ChoiceDialog<CommandAction.Type> typeDialog = new ChoiceDialog<>(CommandAction.Type.SEND_MESSAGE, CommandAction.Type.values());
+        typeDialog.setHeaderText("Choose click action type");
+        var type = typeDialog.showAndWait();
+        if (type.isEmpty()) return;
+
+        TextInputDialog textDialog = new TextInputDialog("Clicked!");
+        textDialog.setHeaderText("Action text (used by message/broadcast/run command)");
+        var text = textDialog.showAndWait();
+        if (text.isEmpty()) return;
+
+        selectedGuiSlot.getOnClickActions().add(new CommandAction(type.get(), text.get()));
+        guiClickActions.getItems().setAll(selectedGuiSlot.getOnClickActions());
+        refreshJsonFromModel();
+    }
+
+    private void editGuiClickAction() {
+        if (selectedGuiSlot == null) return;
+        CommandAction selected = guiClickActions.getSelectionModel().getSelectedItem();
+        if (selected == null) return;
+        ChoiceDialog<CommandAction.Type> typeDialog = new ChoiceDialog<>(selected.getType(), CommandAction.Type.values());
+        typeDialog.setHeaderText("Click action type");
+        var type = typeDialog.showAndWait();
+        if (type.isEmpty()) return;
+
+        TextInputDialog textDialog = new TextInputDialog(selected.getText());
+        textDialog.setHeaderText("Action text");
+        var text = textDialog.showAndWait();
+        if (text.isEmpty()) return;
+
+        selected.setType(type.get());
+        selected.setText(text.get());
+        guiClickActions.refresh();
+        refreshJsonFromModel();
+    }
+
+    private void removeGuiClickAction() {
+        if (selectedGuiSlot == null) return;
+        CommandAction selected = guiClickActions.getSelectionModel().getSelectedItem();
+        if (selected == null) return;
+        selectedGuiSlot.getOnClickActions().remove(selected);
+        guiClickActions.getItems().setAll(selectedGuiSlot.getOnClickActions());
+        refreshJsonFromModel();
     }
 
     private void applyJsonToModel() {
@@ -665,6 +1515,18 @@ public final class EditorView {
         File selected = chooser.showDialog(root.getScene().getWindow());
         if (selected == null) return;
         loadFilesRoot(selected.toPath());
+    }
+
+    private void openAnyFile() {
+        FileChooser chooser = new FileChooser();
+        chooser.setTitle("Open file");
+        chooser.getExtensionFilters().add(new FileChooser.ExtensionFilter("All files", "*.*"));
+        chooser.getExtensionFilters().add(new FileChooser.ExtensionFilter("Java", "*.java"));
+        chooser.getExtensionFilters().add(new FileChooser.ExtensionFilter("YAML", "*.yml", "*.yaml"));
+        chooser.getExtensionFilters().add(new FileChooser.ExtensionFilter("Gradle", "*.gradle", "*.properties"));
+        File selected = chooser.showOpenDialog(root.getScene().getWindow());
+        if (selected == null) return;
+        openFile(selected.toPath());
     }
 
     private void loadFilesRoot(Path rootDir) {
