@@ -65,6 +65,8 @@ public final class EditorView {
     private PluginProject model;
     private Path currentJsonPath;
     private GeneratedProject lastGenerated;
+    private Path autosaveJsonPath;
+    private Runnable onHome = () -> {};
 
     private final BorderPane root = new BorderPane();
     private final TreeView<String> tree = new TreeView<>();
@@ -115,6 +117,16 @@ public final class EditorView {
         return root;
     }
 
+    public void setAutosaveTarget(Path jsonPath) {
+        this.autosaveJsonPath = jsonPath;
+        log("Autosave: " + jsonPath.toAbsolutePath());
+        saveToAutosaveTarget();
+    }
+
+    public void setOnHome(Runnable onHome) {
+        this.onHome = (onHome == null) ? () -> {} : onHome;
+    }
+
     public void shutdown() {
         background.shutdownNow();
     }
@@ -150,6 +162,9 @@ public final class EditorView {
     }
 
     private ToolBar buildToolbar() {
+        Button homeBtn = new Button("Home");
+        homeBtn.setOnAction(e -> onHome.run());
+
         Button newBtn = new Button("New Project...");
         newBtn.setOnAction(e -> newProjectWizard());
 
@@ -175,7 +190,7 @@ public final class EditorView {
 
         Region spacer = new Region();
         HBox.setHgrow(spacer, Priority.ALWAYS);
-        return new ToolBar(newBtn, new Separator(), openBtn, saveBtn, saveAsBtn, openOutBtn, spacer, generateBtn, buildBtn);
+        return new ToolBar(homeBtn, new Separator(), newBtn, new Separator(), openBtn, saveBtn, saveAsBtn, openOutBtn, spacer, generateBtn, buildBtn);
     }
 
     private Parent buildLeftPanel() {
@@ -1088,8 +1103,18 @@ public final class EditorView {
     private void refreshJsonFromModel() {
         try {
             jsonEditor.setText(storage.toJson(model));
+            saveToAutosaveTarget();
         } catch (IOException ex) {
             log("JSON serialize failed: " + ex.getMessage());
+        }
+    }
+
+    private void saveToAutosaveTarget() {
+        if (autosaveJsonPath == null) return;
+        try {
+            storage.save(autosaveJsonPath, model);
+        } catch (IOException ex) {
+            log("Autosave failed: " + ex.getMessage());
         }
     }
 
@@ -1463,8 +1488,8 @@ public final class EditorView {
 
     private void build() {
         if (lastGenerated == null) {
-            log("Nothing generated yet. Click Generate first.");
-            return;
+            log("No generated project yet; generating first...");
+            if (!generateToDefaultOutput()) return;
         }
 
         Path dir = lastGenerated.rootDir();
@@ -1498,6 +1523,22 @@ public final class EditorView {
                 }
             }
         });
+    }
+
+    private boolean generateToDefaultOutput() {
+        DirectoryChooser chooser = new DirectoryChooser();
+        chooser.setTitle("Select output directory (used for Generate + Build)");
+        File selected = chooser.showDialog(root.getScene().getWindow());
+        if (selected == null) return false;
+        try {
+            lastGenerated = generator.generate(model, selected.toPath());
+            log("Generated project at " + lastGenerated.rootDir().toAbsolutePath());
+            loadFilesRoot(lastGenerated.rootDir());
+            return true;
+        } catch (IOException ex) {
+            log("Generate failed: " + ex.getMessage());
+            return false;
+        }
     }
 
     private void openGeneratedRoot() {
